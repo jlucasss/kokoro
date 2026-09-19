@@ -1,4 +1,65 @@
-# kokoro
+# Kokoro (Web/JS Enhanced Fork)
+
+An inference library for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M).
+
+> ⚠️ **ABOUT THIS FORK**: This repository is a specialized fork focusing on a **Robust, Offline-First Web/JavaScript Implementation**. It solves several critical bugs related to ONNX Web integration, Vite/Rollup bundling, and browser memory limits, making Kokoro 100% production-ready for PWAs, Ionic, and Capacitor apps.
+
+## 🚀 Web/JS Enhancements in this Fork
+
+This fork introduces deep modifications to the `kokoro.js` architecture to support seamless frontend deployments:
+
+1. **Fully Offline & PWA Ready (IndexedDB)**: Exposes a `configKokoroEnv` function to dynamically inject a custom cache (like Dexie.js) and local server URLs, completely bypassing hardcoded Hugging Face fetches.
+2. **ONNX Output Patch (Monkey Patch)**: Fixed the critical `Cannot read properties of undefined (reading 'data')` bug. Quantized ONNX models (like `model_uint8.onnx` or `q4`) often output variables named `audio` and `pred_dur` instead of the expected `waveform` and `durations`. This fork safely intercepts and remaps the ONNX outputs.
+3. **Large Audio Support (Memory Fix)**: Fixed the `RangeError: Maximum call stack size exceeded` in JavaScript. The original implementation used spread operators (`...audio.audio`) which crashed the V8 engine on texts longer than 3 seconds. This was rewritten into optimized loops.
+4. **Precise Word-Level Timestamps**: The JS generation pipeline was enhanced to return highly accurate `phonemeMap` and word-level timestamps, allowing UI text-highlighting synced with the audio.
+5. **Vite/Rollup Bundler Proof**: Fixed the "Singleton Duplication" bug where bundlers duplicate `@huggingface/transformers` instances. By injecting the cache directly via `configKokoroEnv`, it prevents `Failed to fetch` and Mixed Content errors on mobile (Ionic/Capacitor).
+6. **Built-in WAV Encoder**: The Web Worker implementation now natively supports `encodeWAV`, wrapping the raw `Float32Array` directly into a playable ArrayBuffer without external dependencies.
+7. **Multi-threading Enabled**: Dynamically detects `navigator.hardwareConcurrency` to max out WebAssembly threads, turning 1-minute generation times into seconds.
+
+---
+
+## 💻 JavaScript / Web Worker Usage (New in this Fork)
+
+To prevent hardcoded URLs and bundler issues, this fork exports `configKokoroEnv`. You must call this function before initializing the model to inject your local server URL and your optional IndexedDB cache.
+
+```javascript
+import { KokoroTTS, configKokoroEnv } from "kokoro-js";
+
+// Your custom IndexedDB cache logic (e.g., Dexie)
+const dexieCustomCache = {
+  async match(request) { /* Read from IndexedDB */ },
+  async put() {} 
+};
+
+self.addEventListener("message", async (e) => {
+  if (e.data.type === "init") {
+    
+    // 1️⃣ Configure the environment dynamically
+    // Injects the local server URL and your offline cache directly into the Transformers.js instance
+    configKokoroEnv(e.data.serverUrl, dexieCustomCache);
+    
+    // 2️⃣ Load the model safely
+    const tts = await KokoroTTS.from_pretrained("kokoro-82m", {
+      dtype: "q8",
+      device: "wasm", // or "webgpu"
+      voices: ["pf_dora"]
+    });
+
+    self.postMessage({ status: "ready" });
+  }
+
+  if (e.data.type === "generate") {
+    // 3️⃣ Generate audio (Now returns a safe payload with phonemeMaps)
+    const result = await tts.generate(e.data.text, { voice: "pf_dora" });
+    
+    // Contains Float32Array audio and word-level timestamps
+    console.log(result.audio, result.phonemeMap); 
+  }
+});
+
+```
+
+---
 
 An inference library for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M). You can [`pip install kokoro`](https://pypi.org/project/kokoro/).
 
