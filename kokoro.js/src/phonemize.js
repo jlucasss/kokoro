@@ -1,4 +1,4 @@
-import { phonemize as espeakng } from "phonemizer";
+import { phonemize as espeakng } from "./espeakng/phonemizer.js";
 
 /**
  * Helper function to split a string on a regex, but keep the delimiters.
@@ -95,7 +95,7 @@ function point_num(match) {
  * @param {string} text The text to normalize
  * @returns {string} The normalized text
  */
-function normalize_text(text) {
+export function normalize_text(text) {
   return (
     text
       // 1. Handle quotes and brackets
@@ -164,14 +164,85 @@ function escapeRegExp(string) {
 const PUNCTUATION = ';:,.!?¡¿—…"«»“”(){}[]';
 const PUNCTUATION_PATTERN = new RegExp(`(\\s*[${escapeRegExp(PUNCTUATION)}]+\\s*)+`, "g");
 
+
+
 /**
  * Phonemize text using the eSpeak-NG phonemizer
  * @param {string} text The text to phonemize
- * @param {"a"|"b"} language The language to use
+ * @param {"a"|"b"|"z"|"e"|"p"} language The language to use
  * @param {boolean} norm Whether to normalize the text
- * @returns {Promise<string>} The phonemized text
+ * @returns {Promise<{phonemes: string, tokens: string[], wordMap: { word: string, start: number, end: number, phonemes: string }[]}>} The phonemized text
  */
 export async function phonemize(text, language = "a", norm = true) {
+  if (norm) text = normalize_text(text);
+
+  const words = text.trim().split(/\s+/);
+
+  const langMap = {
+    a: "en-us",
+    b: "en-gb",
+    p: "pt-br",
+    e: "es",
+    z: "cmn"
+  };
+  const lang = langMap[language] || "en-us";
+
+  const tokens = [];
+  const wordMap = [];
+
+  for (let w of words) {
+    // Se for apenas pontuação, mantemos como item mas sem fonemas
+    if (!/\w/.test(w)) {
+      const start = tokens.length;
+      const end = start; // zero-length span
+      wordMap.push({ word: w, start, end, phonemes: "" });
+      continue;
+    }
+
+    // Obtem fonemas para a palavra
+    let p = (await espeakng(w, lang)).join(" ");
+
+    // Pós-processamento por idioma
+    if (language === "a" || language === "b") {
+      p = p
+        .replace(/kəkˈoːɹoʊ/g, "kˈoʊkəɹoʊ")
+        .replace(/kəkˈɔːɹəʊ/g, "kˈəʊkəɹəʊ")
+        .replace(/ʲ/g, "j")
+        .replace(/r/g, "ɹ")
+        .replace(/x/g, "k")
+        .replace(/ɬ/g, "l")
+        .replace(/(?<=[a-zɹː])(?=hˈʌndɹɪd)/g, " ")
+        .replace(/ z(?=[;:,.!?¡¿—…"«»“” ]|$)/g, "z");
+    } else if (language === "p") {
+      p = p.replace(/ʁ/g, "r").replace(/X/g, "r");
+    }
+    if (language === "a") {
+      p = p.replace(/(?<=nˈaɪn)ti(?!ː)/g, "di");
+    }
+
+    p = p.trim();
+
+    const toks = p.length ? p.split(/\s+/) : [];
+    const start = tokens.length;
+    tokens.push(...toks);
+    const end = tokens.length;
+
+    wordMap.push({ word: w, start, end, phonemes: p });
+  }
+
+  return { phonemes: tokens.join(" "), tokens, wordMap };
+}
+
+
+
+// /**
+//  * Phonemize text using the eSpeak-NG phonemizer
+//  * @param {string} text The text to phonemize
+//  * @param {"a"|"b"|"z"|"e"|"p"} language The language to use
+//  * @param {boolean} norm Whether to normalize the text
+//  * @returns {Promise<string>} The phonemized text
+//  */
+export async function phonemize0(text, language = "a", norm = true) {
   // 1. Normalize text
   if (norm) {
     text = normalize_text(text);
@@ -181,20 +252,39 @@ export async function phonemize(text, language = "a", norm = true) {
   const sections = split(text, PUNCTUATION_PATTERN);
 
   // 3. Convert each section to phonemes
-  const lang = language === "a" ? "en-us" : "en";
+  const langMap = {
+    "a": "en-us",
+    "b": "en-gb",
+    "p": "pt-br", // Português Brasil
+    "e": "es",    // Espanhol
+    "z": "cmn"   // Mandarim
+  };
+  console.log("language", language);
+  console.log("langMap[language]", langMap[language]);
+  const lang = langMap[language] || "en-us";
   const ps = (await Promise.all(sections.map(async ({ match, text }) => (match ? text : (await espeakng(text, lang)).join(" "))))).join("");
 
   // 4. Post-process phonemes
-  let processed = ps
-    // https://en.wiktionary.org/wiki/kokoro#English
-    .replace(/kəkˈoːɹoʊ/g, "kˈoʊkəɹoʊ")
-    .replace(/kəkˈɔːɹəʊ/g, "kˈəʊkəɹəʊ")
-    .replace(/ʲ/g, "j")
-    .replace(/r/g, "ɹ")
-    .replace(/x/g, "k")
-    .replace(/ɬ/g, "l")
-    .replace(/(?<=[a-zɹː])(?=hˈʌndɹɪd)/g, " ")
-    .replace(/ z(?=[;:,.!?¡¿—…"«»“” ]|$)/g, "z");
+  let processed = ps;
+
+    if (language === "a" || language === "b") {
+      // https://en.wiktionary.org/wiki/kokoro#English
+      processed = processed
+        .replace(/kəkˈoːɹoʊ/g, "kˈoʊkəɹoʊ")
+        .replace(/kəkˈɔːɹəʊ/g, "kˈəʊkəɹəʊ")
+        .replace(/ʲ/g, "j")
+        .replace(/r/g, "ɹ")
+        .replace(/x/g, "k")
+        .replace(/ɬ/g, "l")
+        .replace(/(?<=[a-zɹː])(?=hˈʌndɹɪd)/g, " ")
+        .replace(/ z(?=[;:,.!?¡¿—…"«»“” ]|$)/g, "z");
+  } else if (language === "p") {
+    // Correções específicas para o Português v1.0
+    processed = processed
+      .replace(/r/g, "r") // Mantém o r original do eSpeak para PT
+      .replace(/ʁ/g, "r") // Converte o r gutural para o r que o Kokoro entende
+      .replace(/X/g, "r"); // Algumas versões do eSpeak usam X para o RR
+  }
 
   // 5. Additional post-processing for American English
   if (language === "a") {

@@ -1,137 +1,191 @@
 import { useRef, useState, useEffect } from "react";
-import { motion } from "motion/react";
 
 export default function App() {
-  // Create a reference to the worker object.
   const worker = useRef(null);
+  const audioPlayerRef = useRef(null);
 
-  const [inputText, setInputText] = useState("Life is like a box of chocolates. You never know what you're gonna get.");
-  const [selectedSpeaker, setSelectedSpeaker] = useState("af_heart");
-
+  const [inputText, setInputText] = useState("No princípio criou Deus os céus e a terra.");
+  const [selectedSpeaker, setSelectedSpeaker] = useState("pf_dora");
   const [voices, setVoices] = useState([]);
   const [status, setStatus] = useState(null);
-  const [error, setError] = useState(null);
-  const [loadingMessage, setLoadingMessage] = useState("Loading...");
-
   const [results, setResults] = useState([]);
 
-  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
-    // Create the worker if it does not yet exist.
-    worker.current ??= new Worker(new URL("./worker.js", import.meta.url), {
-      type: "module",
-    });
+    if (!worker.current) {
+      worker.current = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+    }
 
-    // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
-      switch (e.data.status) {
-        case "device":
-          setLoadingMessage(`Loading model (device="${e.data.device}")`);
-          break;
-        case "ready":
-          setStatus("ready");
-          setVoices(e.data.voices);
-          break;
-        case "error":
-          setError(e.data.data);
-          break;
-        case "complete":
-          const { audio, text } = e.data;
-          // Generation complete: re-enable the "Generate" button
-          setResults((prev) => [{ text, src: audio }, ...prev]);
-          setStatus("ready");
-          break;
+      if (e.data.status === "ready") {
+        setStatus("ready");
+        setVoices(e.data.voices);
+      } else if (e.data.status === "complete") {
+        // Criamos um objeto único com ID baseado no timestamp para evitar chaves duplicadas
+        const newResult = {
+          id: crypto.randomUUID(),
+          text: e.data.text,
+          src: e.data.audio,
+          words: e.data.words // Array de objetos {text, start, end}
+        };
+
+        console.log("e", e);
+        console.log("words", newResult.words);
+
+        setResults((prev) => [newResult, ...prev]);
+        setStatus("ready");
       }
     };
 
-    const onErrorReceived = (e) => {
-      console.error("Worker error:", e);
-      setError(e.message);
-    };
-
-    // Attach the callback function as an event listener.
     worker.current.addEventListener("message", onMessageReceived);
-    worker.current.addEventListener("error", onErrorReceived);
-
-    // Define a cleanup function for when the component is unmounted.
-    return () => {
-      worker.current.removeEventListener("message", onMessageReceived);
-      worker.current.removeEventListener("error", onErrorReceived);
-    };
+    return () => worker.current?.removeEventListener("message", onMessageReceived);
   }, []);
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (status === "running") return;
     setStatus("running");
-
-    worker.current.postMessage({
-      type: "generate",
-      text: inputText.trim(),
-      voice: selectedSpeaker,
-    });
+    worker.current.postMessage({ text: inputText, voice: selectedSpeaker });
   };
 
-  return (
-    <div className="relative w-full min-h-screen bg-gradient-to-br from-gray-900 to-gray-700 flex flex-col items-center justify-center p-4 relative overflow-hidden font-sans">
-      <motion.div initial={{ opacity: 1 }} animate={{ opacity: status === null ? 1 : 0 }} transition={{ duration: 0.5 }} className="absolute w-screen h-screen justify-center flex flex-col items-center z-10 bg-gray-800/95 backdrop-blur-md" style={{ pointerEvents: status === null ? "auto" : "none" }}>
-        <div className="w-[250px] h-[250px] border-4 border-white shadow-[0_0_0_5px_#4973ff] rounded-full overflow-hidden">
-          <div className="loading-wave"></div>
-        </div>
-        <p className={`text-3xl my-5 text-center ${error ? "text-red-500" : "text-white"}`}>{error ?? loadingMessage}</p>
-      </motion.div>
+  const [audioSrc, setAudioSrc] = useState();
+  const [startTime, setStartTime] = useState();
+  const [endTime, setEndTime] = useState();
+  const [currentTime, setCurrentTime] = useState(0);
 
-      <div className="max-w-3xl w-full space-y-8 relative z-[2]">
-        <div className="text-center">
-          <h1 className="text-5xl font-extrabold text-gray-100 mb-2 drop-shadow-lg font-heading">Kokoro Text-to-Speech</h1>
-          <p className="text-2xl text-gray-300 font-semibold font-subheading">
-            Powered by&nbsp;
-            <a href="https://github.com/hexgrad/kokoro" target="_blank" rel="noreferrer" className="underline">
-              Kokoro
-            </a>
-            &nbsp;and&nbsp;
-            <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noreferrer" className="underline">
-              <img width="40" src="hf-logo.svg" className="inline translate-y-[-2px] me-1"></img>Transformers.js
-            </a>
-          </p>
+  const requestRef = useRef(); // Ref para cancelar o loop do rAF
+  
+  const [currentWordIdx, setCurrentWordIdx] = useState(null); // Para destacar a palavra na UI
+  const playPromiseRef = useRef(null);
+
+  // Função para tocar (mesma lógica, mas limpando estados anteriores)
+  const handleWordClick = async (audioSrc, startTime, endTime) => {
+    const audio = audioPlayerRef.current;
+    if (!audio) return;
+
+    // 1. Se já existe uma promessa de play em curso, aguardamos ou ignoramos
+    if (playPromiseRef.current) {
+      try { await playPromiseRef.current; } catch(e) { /* ignore */ }
+    }
+
+    // Se mudar a fonte, resetamos
+    if (audio.src !== audioSrc) {
+      audio.src = audioSrc;
+    }
+
+    setAudioSrc(audioSrc);
+    setStartTime(startTime);
+    //const safetyMargin = 0.025; // 25ms
+    setEndTime(endTime ? endTime : 9999); // Se não houver fim (frase toda), pomos um valor alto
+    //console.log(`${endTime} * ${safetyMargin}`, (endTime - safetyMargin))
+
+    audio.currentTime = startTime;
+
+    // 2. Armazena a promessa e trata o play
+    playPromiseRef.current = audio.play();
+
+    try {
+      await playPromiseRef.current;
+      playPromiseRef.current = null;
+    } catch (error) {
+      console.error("Play impedido:", error);
+    }
+  };
+
+  useEffect(() => {
+    const audio = audioPlayerRef.current;
+    if (!audio) return;
+
+    // No useEffect do requestAnimationFrame, mude a condição de pausa:
+    const syncUI = () => {
+      const now = audio.currentTime;
+      setCurrentTime(now);
+
+      if (endTime !== null && now >= endTime) {
+        // SÓ PAUSA SE NÃO ESTIVERMOS NO MEIO DE UM COMANDO DE PLAY
+        if (!playPromiseRef.current) {
+          audio.pause();
+          cancelAnimationFrame(requestRef.current);
+        }
+        return;
+      }
+      requestRef.current = requestAnimationFrame(syncUI);
+    };
+
+   const onPlay = () => {
+      requestRef.current = requestAnimationFrame(syncUI);
+    };
+
+    const onPause = () => {
+      cancelAnimationFrame(requestRef.current);
+    };
+
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+
+    return () => {
+      cancelAnimationFrame(requestRef.current);
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+    };
+  }, [endTime]);
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-white p-6 flex flex-col items-center">
+      <div className="w-full max-w-2xl space-y-6">
+        
+        {/* PLAYER ÚNICO FIXO */}
+        <div className="sticky top-0 bg-gray-800 p-4 rounded-b-xl border-x border-b border-blue-500/20 shadow-xl z-20">
+          <audio ref={audioPlayerRef} controls className="w-full" />
         </div>
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <textarea placeholder="Enter text..." value={inputText} onChange={(e) => setInputText(e.target.value)} className="w-full min-h-[100px] max-h-[300px] bg-gray-700/50 backdrop-blur-sm border-2 border-gray-600 rounded-xl resize-y text-gray-100 placeholder-gray-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" rows={Math.min(8, inputText.split("\n").length)} />
-            <div className="flex flex-col items-center space-y-4">
-              <select value={selectedSpeaker} onChange={(e) => setSelectedSpeaker(e.target.value)} className="w-full bg-gray-700/50 backdrop-blur-sm border-2 border-gray-600 rounded-xl text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                {Object.entries(voices).map(([id, voice]) => (
-                  <option key={id} value={id}>
-                    {voice.name} ({voice.language === "en-us" ? "American" : "British"} {voice.gender})
-                  </option>
+
+        <form onSubmit={handleSubmit} className="space-y-4 bg-gray-800 p-4 rounded-xl">
+          <textarea 
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            className="w-full bg-gray-700 p-3 rounded-lg outline-none focus:ring-1 ring-blue-500"
+          />
+          <div className="flex gap-4">
+            <select 
+              value={selectedSpeaker} 
+              onChange={(e) => setSelectedSpeaker(e.target.value)}
+              className="flex-1 bg-gray-700 p-2 rounded-lg"
+            >
+              {Object.entries(voices).map(([id, v]) => (
+                <option key={id} value={id}>{v.name}</option>
+              ))}
+            </select>
+            <button 
+              disabled={status === "running"}
+              className="px-6 py-2 bg-blue-600 rounded-lg font-bold disabled:opacity-50"
+            >
+              {status === "running" ? "Gerando..." : "Gerar Voz"}
+            </button>
+          </div>
+        </form>
+
+        <div className="space-y-4">
+          {results.map((result) => (
+            <div key={result.id} className="bg-gray-800 p-5 rounded-xl border border-gray-700">
+              <div className="flex flex-wrap gap-2">
+                {result.words.map((word, idx) => (
+                  <button
+                    key={`${result.id}-w-${idx}`}
+                    onClick={() => handleWordClick(result.src, word.start, word.end)}
+                    className={`px-2 py-1 bg-gray-700 hover:bg-blue-600 rounded text-sm transition-colors `}
+                  >
+                    {word.word}
+                  </button>
                 ))}
-              </select>
-              <button type="submit" className="inline-flex justify-center items-center px-6 py-2 text-lg font-semibold bg-gradient-to-t from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 transition-colors duration-300 rounded-xl text-white disabled:opacity-50" disabled={status === "running" || inputText.trim() === ""}>
-                {status === "running" ? "Generating..." : "Generate"}
+              </div>
+              <button 
+                onClick={() => handleWordClick(result.src, 0)}
+                className="mt-4 text-xs text-blue-400 hover:underline"
+              >
+                Tocar frase completa
               </button>
             </div>
-          </form>
+          ))}
         </div>
-
-        {results.length > 0 && (
-          <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.5 }} className="max-h-[250px] overflow-y-auto px-2 mt-4 space-y-6 relative z-[2]">
-            {results.map((result, i) => (
-              <div key={i}>
-                <div className="text-white bg-gray-800/70 backdrop-blur-sm border border-gray-700 rounded-lg p-4 z-10">
-                  <span className="absolute right-5 font-bold">#{results.length - i}</span>
-                  <p className="mb-3 max-w-[95%]">{result.text}</p>
-                  <audio controls src={result.src} className="w-full">
-                    Your browser does not support the audio element.
-                  </audio>
-                </div>
-              </div>
-            ))}
-          </motion.div>
-        )}
-      </div>
-
-      <div className="bg-[#015871] pointer-events-none absolute left-0 w-full h-[5%] bottom-[-50px]">
-        <div className="wave"></div>
-        <div className="wave"></div>
       </div>
     </div>
   );
